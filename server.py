@@ -9,6 +9,7 @@ import hmac
 import os
 import re
 import secrets
+import ssl
 import sys
 import threading
 import time
@@ -281,13 +282,21 @@ def fetch_text(url):
         "User-Agent": "Mozilla/5.0 (compatible; PulseAnalytics/1.0; +http://localhost)",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
     })
-    try:
-        with urllib.request.urlopen(request, timeout=18) as response:
-            return response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError("Публичная страница вернула HTTP %s" % exc.code)
-    except urllib.error.URLError as exc:
-        raise RuntimeError("Нет связи с публичной страницей: %s" % exc.reason)
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=18) as response:
+                return response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError("Публичная страница вернула HTTP %s" % exc.code)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            transient = isinstance(reason, (TimeoutError, ConnectionResetError, ConnectionAbortedError)) or (
+                isinstance(reason, ssl.SSLError) and "timed out" in str(reason).lower()
+            )
+            if attempt == 0 and transient:
+                time.sleep(0.5)
+                continue
+            raise RuntimeError("Нет связи с публичной страницей: %s" % reason)
 
 
 def clean_html(value):
