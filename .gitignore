@@ -1,0 +1,9 @@
+.env
+__pycache__/
+data/runtime.json
+data/account.json
+data/connections.json
+data/users.json
+data/folders.json
+data/folders/
+.DS_Store
