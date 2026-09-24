@@ -51,6 +51,19 @@ class MultiuserTest(unittest.TestCase):
         conn.close()
         return result
 
+    def test_daily_sync_requires_server_secret(self):
+        self.assertEqual(self.request('/api/cron/sync')[0], 403)
+        with patch.dict('os.environ', {'CRON_SECRET': 'test-cron-secret'}), patch.object(server, 'run_sync', return_value={'ok': True}) as sync:
+            connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port)
+            connection.request('GET', '/api/cron/sync', headers={'Authorization': 'Bearer test-cron-secret'})
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(body['ok'])
+            self.assertEqual(body['synced'], 1)
+            self.assertEqual(sync.call_count, 1)
+
     def test_migration_registration_and_permissions(self):
         status, _, owner_cookie = self.request('/api/auth/login', {'email': 'necit0186@gmail.com', 'password': 'old-password'})
         self.assertEqual(status, 200)

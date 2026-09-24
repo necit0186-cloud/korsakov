@@ -1,4 +1,6 @@
 .env
+.env.local
+.env.*.local
 __pycache__/
 data/runtime.json
 data/account.json
@@ -7,3 +9,6 @@ data/users.json
 data/folders.json
 data/folders/
 .DS_Store
+vercel-site/
+vercel-full/
+.vercel/

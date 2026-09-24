@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import persistent_store as store
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -30,8 +31,8 @@ CONNECTIONS_FILE = DATA_DIR / "connections.json"
 USERS_FILE = DATA_DIR / "users.json"
 FOLDERS_FILE = DATA_DIR / "folders.json"
 FOLDER_DIR = DATA_DIR / "folders"
-LOCK = threading.Lock()
-SYNC_LOCK = threading.Lock()
+LOCK = store.StoreLock("data")
+SYNC_LOCK = store.StoreLock("sync")
 SESSIONS = {}
 
 PLATFORMS = ("vk", "telegram", "max")
@@ -56,35 +57,27 @@ def folder_path(folder_id, name):
 def read_runtime(folder_id):
     with LOCK:
         try:
-            return json.loads(folder_path(folder_id, "runtime.json").read_text(encoding="utf-8"))
+            return store.read_json(folder_path(folder_id, "runtime.json"))
         except (FileNotFoundError, json.JSONDecodeError):
             return {"last_sync": None, "platforms": {}, "events": []}
 
 
 def write_runtime(folder_id, data):
-    folder_path(folder_id, "runtime.json").parent.mkdir(parents=True, exist_ok=True)
     with LOCK:
-        temp = folder_path(folder_id, "runtime.tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.chmod(str(temp), 0o600)
-        temp.replace(folder_path(folder_id, "runtime.json"))
+        store.write_json(folder_path(folder_id, "runtime.json"), data)
 
 
 def read_secure_json(path, default):
     with LOCK:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return store.read_json(path)
         except (FileNotFoundError, json.JSONDecodeError):
             return default
 
 
 def write_secure_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
     with LOCK:
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.chmod(str(temp), 0o600)
-        temp.replace(path)
+        store.write_json(path, data)
 
 
 def password_hash(password, salt=None):
@@ -104,11 +97,15 @@ def default_connections():
 
 def migrate_legacy():
     """One-time copy; retain the original files as a recovery backup."""
+    if store.remote_enabled():
+        if not store.exists(USERS_FILE) or not store.exists(FOLDERS_FILE):
+            raise RuntimeError("Сначала перенесите существующие аккаунты и папки в постоянное хранилище")
+        return
     with LOCK:
-        if USERS_FILE.exists():
+        if store.exists(USERS_FILE):
             return
         try:
-            legacy = json.loads(ACCOUNT_FILE.read_text(encoding="utf-8"))
+            legacy = store.read_json(ACCOUNT_FILE)
         except (FileNotFoundError, json.JSONDecodeError):
             legacy = None
         users = {}
@@ -119,11 +116,10 @@ def migrate_legacy():
             users[user_id] = legacy
             folder_id = secrets.token_hex(12)
             folders[folder_id] = {"id": folder_id, "owner_id": user_id, "name": "Министерство молодёжной политики ЛНР", "blocked": False, "blocked_projects": []}
-            folder_path(folder_id, "connections.json").parent.mkdir(parents=True, exist_ok=True)
-            if CONNECTIONS_FILE.exists():
-                write_json_unlocked(folder_path(folder_id, "connections.json"), json.loads(CONNECTIONS_FILE.read_text(encoding="utf-8")))
-            if RUNTIME_FILE.exists():
-                write_json_unlocked(folder_path(folder_id, "runtime.json"), json.loads(RUNTIME_FILE.read_text(encoding="utf-8")))
+            if store.exists(CONNECTIONS_FILE):
+                write_json_unlocked(folder_path(folder_id, "connections.json"), store.read_json(CONNECTIONS_FILE))
+            if store.exists(RUNTIME_FILE):
+                write_json_unlocked(folder_path(folder_id, "runtime.json"), store.read_json(RUNTIME_FILE))
         write_json_unlocked(FOLDERS_FILE, folders)
         write_json_unlocked(USERS_FILE, users)
 
@@ -131,8 +127,8 @@ def migrate_legacy():
 def ensure_first_folders():
     """Upgrade accounts registered before automatic starter folders were introduced."""
     with LOCK:
-        users = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-        folders = json.loads(FOLDERS_FILE.read_text(encoding="utf-8"))
+        users = store.read_json(USERS_FILE)
+        folders = store.read_json(FOLDERS_FILE)
         changed = False
         for user_id in users:
             if any(folder["owner_id"] == user_id for folder in folders.values()):
@@ -145,11 +141,7 @@ def ensure_first_folders():
 
 
 def write_json_unlocked(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(temp, 0o600)
-    temp.replace(path)
+    store.write_json(path, data)
 
 
 def public_user(user, for_admin=False):
@@ -179,8 +171,8 @@ def owned_folder(user, folder_id, platform=None):
 def load_connections(folder_id):
     defaults = default_connections()
     path = folder_path(folder_id, "connections.json")
-    if not path.exists():
-        write_secure_json(path, defaults)
+    if not store.exists(path):
+        store.write_json(path, defaults, only_if_missing=True)
     saved = read_secure_json(path, {})
     for platform in defaults:
         defaults[platform].update(saved.get(platform, {}))
@@ -249,7 +241,10 @@ def safe_connections(folder_id):
 
 def create_session(user_id):
     token = secrets.token_urlsafe(32)
-    SESSIONS[token] = (user_id, time.time() + 86400)
+    if store.remote_enabled():
+        store.save_session(token, user_id)
+    else:
+        SESSIONS[token] = (user_id, time.time() + 86400)
     return token
 
 
@@ -1121,9 +1116,10 @@ class Handler(SimpleHTTPRequestHandler):
         return cookie.get("pulse_session").value if cookie.get("pulse_session") else ""
 
     def current_user(self):
-        cleanup_sessions()
+        if not store.remote_enabled():
+            cleanup_sessions()
         token = self.session_token()
-        session = SESSIONS.get(token)
+        session = (store.get_session(token), time.time() + 1) if store.remote_enabled() else SESSIONS.get(token)
         if not session or session[1] <= time.time():
             return None
         user = read_secure_json(USERS_FILE, {}).get(session[0])
@@ -1147,6 +1143,23 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/cron/sync":
+            secret = os.getenv("CRON_SECRET", "")
+            if not secret or not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + secret):
+                return self.send_json({"error": "Доступ запрещён"}, 403)
+            folders = read_secure_json(FOLDERS_FILE, {})
+            users = read_secure_json(USERS_FILE, {})
+            synced, failed = 0, 0
+            for folder_id, folder in folders.items():
+                if folder.get("blocked") or users.get(folder["owner_id"], {}).get("blocked"):
+                    continue
+                try:
+                    run_sync(folder_id)
+                    synced += 1
+                except Exception as exc:
+                    failed += 1
+                    print("Ошибка синхронизации папки %s: %s" % (folder_id, exc))
+            return self.send_json({"ok": failed == 0, "synced": synced, "failed": failed})
         if parsed.path == "/api/health":
             return self.send_json({"ok": True, "service": "korsakov", "time": datetime.now(timezone.utc).isoformat()})
         if parsed.path == "/api/auth/status":
@@ -1213,13 +1226,13 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("Укажите имя, корректную почту и пароль от 8 символов")
                 salt, digest = password_hash(password)
                 with LOCK:
-                    users = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+                    users = store.read_json(USERS_FILE)
                     if any(row["email"] == email for row in users.values()):
                         return self.send_json({"ok": False, "error": "Эта почта уже зарегистрирована"}, 409)
                     user_id = secrets.token_hex(12)
                     users[user_id] = {"id": user_id, "name": name, "email": email, "salt": salt, "password_hash": digest, "role": "admin" if not users else "user", "premium": False, "extra_folders": 0, "blocked": False, "created_at": datetime.now(timezone.utc).isoformat()}
                     write_json_unlocked(USERS_FILE, users)
-                    folders = json.loads(FOLDERS_FILE.read_text(encoding="utf-8"))
+                    folders = store.read_json(FOLDERS_FILE)
                     folder_id = secrets.token_hex(12)
                     folders[folder_id] = {"id": folder_id, "owner_id": user_id, "name": "Моя первая папка", "blocked": False, "blocked_projects": []}
                     write_json_unlocked(FOLDERS_FILE, folders)
@@ -1242,6 +1255,7 @@ class Handler(SimpleHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError):
                 return self.send_json({"ok": False, "error": "Некорректный запрос"}, 400)
         if parsed.path == "/api/auth/logout":
+            store.delete_session(self.session_token())
             SESSIONS.pop(self.session_token(), None)
             return self.send_json({"ok": True}, headers={"Set-Cookie": "pulse_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"})
 
@@ -1281,7 +1295,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not 1 <= len(name) <= 100:
                     raise ValueError("Название папки должно содержать от 1 до 100 символов")
                 with LOCK:
-                    folders = json.loads(FOLDERS_FILE.read_text(encoding="utf-8"))
+                    folders = store.read_json(FOLDERS_FILE)
                     if sum(f["owner_id"] == user["id"] for f in folders.values()) >= folder_limit(user):
                         raise PermissionError("Достигнут лимит папок. Дополнительную папку можно запросить у администратора")
                     folder_id = secrets.token_hex(12)
@@ -1294,7 +1308,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("Название папки должно содержать от 1 до 100 символов")
                 folder_id = payload.get("folder_id")
                 with LOCK:
-                    folders = json.loads(FOLDERS_FILE.read_text(encoding="utf-8"))
+                    folders = store.read_json(FOLDERS_FILE)
                     folder = folders.get(folder_id) if isinstance(folder_id, str) else None
                     if not folder or folder["owner_id"] != user["id"]:
                         raise PermissionError("Папка не найдена")
@@ -1309,8 +1323,8 @@ class Handler(SimpleHTTPRequestHandler):
                 field = payload.get("field")
                 target_id = payload.get("user_id")
                 with LOCK:
-                    users = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-                    folders = json.loads(FOLDERS_FILE.read_text(encoding="utf-8"))
+                    users = store.read_json(USERS_FILE)
+                    folders = store.read_json(FOLDERS_FILE)
                     if target_id not in users:
                         raise ValueError("Пользователь не найден")
                     if field in ("premium", "blocked"):
@@ -1334,7 +1348,7 @@ class Handler(SimpleHTTPRequestHandler):
                             folder["blocked"] = payload["value"]
                         else:
                             platform = payload.get("platform")
-                            configs = json.loads(folder_path(folder["id"], "connections.json").read_text(encoding="utf-8")) if folder_path(folder["id"], "connections.json").exists() else {}
+                            configs = store.read_json(folder_path(folder["id"], "connections.json")) if store.exists(folder_path(folder["id"], "connections.json")) else {}
                             if platform not in PLATFORMS or not configs.get(platform, {}).get("url"):
                                 raise ValueError("Проект не найден")
                             blocked = set(folder.get("blocked_projects", []))
