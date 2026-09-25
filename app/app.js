@@ -740,7 +740,9 @@ async function logout() {
   state.cabinet = null;
   state.folderId = null;
   state.folders = [];
-  showAuth(false);
+  // Перезапускаем приложение на корневом маршруте: так сбрасываются
+  // выбранная папка, открытый раздел и возможный invite-параметр в URL.
+  window.location.assign('/');
 }
 
 function exportCsv() {
