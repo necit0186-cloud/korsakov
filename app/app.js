@@ -163,13 +163,14 @@ async function loadFolders(preferred) {
   state.sharedFolders = data.shared_folders || [];
   state.folders = [...state.ownedFolders, ...state.sharedFolders];
   state.folderLimit = data.limit;
-  state.folderId = data.folders.find(f => f.id === (preferred || state.folderId) && !f.blocked)?.id || data.folders.find(f => !f.blocked)?.id || null;
+  state.folderId = state.folders.find(f => f.id === (preferred || state.folderId) && !f.blocked)?.id || state.folders.find(f => !f.blocked)?.id || null;
   applyAccount(state.account);
   const select = document.querySelector('#folderSelect');
   select.innerHTML = state.folders.map(f => `<option value="${escapeHtml(f.id)}" ${f.blocked ? 'disabled' : ''}>${escapeHtml(f.name)}${f.role !== 'owner' ? ` · ${roleLabel(f.role)}` : ''}${f.blocked ? ' (заблокирована)' : ''}</option>`).join('');
   if (state.folderId) select.value = state.folderId;
   select.disabled = !state.folderId;
-  document.querySelector('#renameFolder').disabled = !state.folderId;
+  const selectedFolder = state.folders.find(f => f.id === state.folderId);
+  document.querySelector('#renameFolder').disabled = !selectedFolder || selectedFolder.role !== 'owner';
   document.querySelector('#folderLimit').textContent = `${data.folders.length} из ${data.limit}`;
   renderFolderCards();
   const canCreate = data.folders.length < data.limit;
