@@ -468,11 +468,55 @@ function historyTable(data) {
     <div class="history-mobile">${Array.from({ length: data.grouping === 'month' ? 12 : 4 }, (_, i) => `<article class="history-period"><h4>${data.grouping === 'month' ? monthLabels[i] : `${i + 1} квартал`}</h4>${data.rows.filter(row => row.period === i + 1).map(row => `<div class="history-period-network"><strong>${escapeHtml(platformLabels[row.platform])}</strong>${row.audience === null && row.posts === null && row.vk_reach === null ? `<span class="history-period-empty">${future(row) ? 'Период ещё не наступил' : 'Нет данных'}</span>` : `<dl><div><dt>Аудитория</dt><dd>${numberOrDash(row.audience)}</dd></div><div><dt>Изменение</dt><dd>${numberOrDash(row.audience_change)}</dd></div><div><dt>Публикации</dt><dd>${numberOrDash(row.posts)}</dd></div><div><dt>Просмотры</dt><dd>${numberOrDash(row.post_views)}</dd></div><div><dt>Реакции</dt><dd>${numberOrDash(row.reactions)}</dd></div>${row.platform === 'vk' ? `<div><dt>Охват VK</dt><dd>${numberOrDash(row.vk_reach)}</dd></div>` : ''}</dl>`}</div>`).join('')}</article>`).join('')}</div><p class="history-footnote">${available} из ${data.rows.length} строк содержат данные. ${data.vk_fetched_at ? `Архив VK загружен ${escapeHtml(new Date(data.vk_fetched_at).toLocaleDateString('ru-RU'))}.` : ''}</p>`;
 }
 
+function reportMetric(value) { return value === null || value === undefined ? '—' : formatCompact(value); }
+function reportSummary(data) {
+  const kpis = [
+    ['Публикации', data.posts.value, 'Зафиксировано в периоде', 'file'],
+    ['Просмотры', data.views.value, 'По доступным публикациям', 'eye'],
+    ['Реакции', data.reactions.value, 'Лайки и реакции', 'heart'],
+    ['Комментарии', data.comments.value, 'По доступным публикациям', 'users'],
+    ['Охват VK', data.vk_reach.value, 'Отдельная метрика VK API', 'target'],
+  ];
+  const cards = kpis.map(([title, value, caption, glyph]) => `<article class="report-kpi"><span class="report-kpi-icon">${icon(glyph)}</span><small>${title}</small><strong>${reportMetric(value)}</strong><em>${caption}</em></article>`).join('');
+  const platforms = data.audience.map(item => `<article class="report-platform"><div><span class="post-platform ${item.platform}">${platformLetters[item.platform]}</span><strong>${escapeHtml(platformLabels[item.platform])}</strong></div><b>${reportMetric(item.value)}</b><small>Аудитория на конец периода${item.change === null ? '' : ` · ${item.change > 0 ? '+' : ''}${formatNumber(item.change)}`}</small></article>`).join('');
+  const posts = data.top_posts.length ? data.top_posts.map((post, index) => `<div class="report-post"><b>${index + 1}</b><div><strong>${post.url ? `<a href="${escapeHtml(post.url)}" target="_blank" rel="noopener">${escapeHtml(post.title)}</a>` : escapeHtml(post.title)}</strong><small>${escapeHtml(platformLabels[post.platform])} · ${escapeHtml(post.date)}</small></div><span>${reportMetric(post.reactions)} реакций</span></div>`).join('') : '<p class="history-empty">В выбранном периоде нет зафиксированных публикаций.</p>';
+  return `<div class="report-kpis">${cards}</div><div class="report-columns"><article class="card report-panel"><div class="card-head"><div><h3>Площадки</h3><p>Аудитория не суммируется между соцсетями.</p></div></div><div class="report-platforms">${platforms || '<p class="history-empty">Нет подключённых площадок.</p>'}</div></article><article class="card report-panel"><div class="card-head"><div><h3>Лучшие публикации</h3><p>Топ среди доступных материалов по реакциям.</p></div></div><div class="report-posts">${posts}</div></article></div><article class="card report-panel report-notes"><h3>Как читать отчёт</h3><ul>${data.notes.map(note => `<li>${escapeHtml(note)}</li>`).join('')}</ul></article>`;
+}
+
+async function loadReport() {
+  if (!state.folderId) return;
+  const year = Number(document.querySelector('#reportYear').value || new Date().getUTCFullYear());
+  const platform = document.querySelector('#reportPlatform').value;
+  const target = document.querySelector('#reportSummary');
+  target.innerHTML = '<p class="history-empty">Формируем отчёт…</p>';
+  try {
+    const data = await api(folderQuery(`/api/reports/data?year=${year}&platform=${encodeURIComponent(platform)}`));
+    target.innerHTML = reportSummary(data);
+    document.querySelector('#reportUpdated').textContent = data.last_sync ? `Данные на ${new Date(data.last_sync).toLocaleString('ru-RU')}` : 'Синхронизация ещё не запускалась';
+  } catch (error) { target.innerHTML = `<p class="history-empty">${escapeHtml(error.message)}. Попробуйте выбрать другой период.</p>`; }
+}
+
+async function downloadReportExcel() {
+  const year = Number(document.querySelector('#reportYear').value || new Date().getUTCFullYear());
+  const platform = document.querySelector('#reportPlatform').value;
+  const response = await fetch(folderQuery(`/api/reports.xlsx?year=${year}&platform=${encodeURIComponent(platform)}`), { credentials: 'same-origin' });
+  if (!response.ok) throw new Error('Не удалось сформировать Excel');
+  const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `korsakov-report-${year}.xlsx`; link.click(); URL.revokeObjectURL(link.href);
+}
+
+async function printReport() {
+  const year = Number(document.querySelector('#reportYear').value || new Date().getUTCFullYear());
+  const platform = document.querySelector('#reportPlatform').value;
+  const data = await api(folderQuery(`/api/reports/data?year=${year}&platform=${encodeURIComponent(platform)}`));
+  const popup = window.open('', '_blank'); if (!popup) throw new Error('Разрешите всплывающие окна для PDF');
+  popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>KORSAKOV — ${escapeHtml(data.folder.name)}</title><style>@page{size:A4;margin:16mm}body{font:12px Arial,sans-serif;color:#172033}h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 10px}.meta{color:#687386;margin-bottom:20px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.card{border:1px solid #dfe3ea;border-radius:8px;padding:11px;break-inside:avoid}.card b{display:block;font-size:18px;margin-top:6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.row{display:flex;justify-content:space-between;border-bottom:1px solid #edf0f4;padding:8px 0}.note{background:#f5f7fb;padding:10px;border-radius:6px}small{color:#687386}</style></head><body><h1>KORSAKOV</h1><div class="meta">${escapeHtml(data.folder.name)} · ${year} · ${platform === 'all' ? 'Все площадки' : escapeHtml(platformLabels[platform])}<br>Сформировано ${new Date(data.generated_at).toLocaleString('ru-RU')}</div><div class="cards">${[['Публикации',data.posts.value],['Просмотры',data.views.value],['Реакции',data.reactions.value],['Комментарии',data.comments.value]].map(x=>`<div class="card"><small>${x[0]}</small><b>${x[1] == null ? '—' : formatNumber(x[1])}</b></div>`).join('')}</div><h2>Площадки</h2><div class="grid">${data.audience.map(x=>`<div class="card"><b>${escapeHtml(platformLabels[x.platform])}</b><div class="row"><span>Аудитория</span><strong>${reportMetric(x.value)}</strong></div><div class="row"><span>Изменение</span><strong>${x.change == null ? '—' : formatNumber(x.change)}</strong></div></div>`).join('')}</div><h2>Лучшие публикации</h2><div class="card">${data.top_posts.map(p=>`<div class="row"><span>${escapeHtml(p.title)}<br><small>${escapeHtml(platformLabels[p.platform])} · ${p.date}</small></span><strong>${reportMetric(p.reactions)}</strong></div>`).join('') || 'Нет данных'}</div><h2>Методика</h2><div class="note">${data.notes.map(escapeHtml).join('<br>')}</div><script>window.onload=()=>window.print()</script></body></html>`); popup.document.close();
+}
+
 async function loadHistorySection(kind) {
   if (!state.folderId) return;
   const folderId = state.folderId;
   const current = kind === 'current';
-  const year = current ? new Date().getUTCFullYear() : state.archiveYear;
+  const year = current ? Number(document.querySelector('#reportYear')?.value || new Date().getUTCFullYear()) : state.archiveYear;
   const grouping = document.querySelector(current ? '#currentGrouping' : '#archiveGrouping').value;
   const target = document.querySelector(current ? '#currentHistory' : '#archiveHistory');
   target.innerHTML = '<p class="history-empty">Загружаем историю…</p>';
@@ -486,7 +530,8 @@ async function loadHistorySection(kind) {
 
 async function loadHistoryReports() {
   if (!state.folderId) return;
-  document.querySelector('#currentYearTitle').textContent = `Текущий год · ${new Date().getUTCFullYear()}`;
+  const currentTitle = document.querySelector('#currentYearTitle');
+  if (currentTitle) currentTitle.textContent = `Текущий год · ${document.querySelector('#reportYear')?.value || new Date().getUTCFullYear()}`;
   const select = document.querySelector('#archiveYear');
   if (!select.options.length) {
     for (let year = new Date().getUTCFullYear() - 1; year >= 2006; year--) select.add(new Option(String(year), String(year)));
@@ -497,7 +542,7 @@ async function loadHistoryReports() {
 
 async function backfillVk(kind) {
   const current = kind === 'current';
-  const year = current ? new Date().getUTCFullYear() : state.archiveYear;
+  const year = current ? Number(document.querySelector('#reportYear')?.value || new Date().getUTCFullYear()) : state.archiveYear;
   const button = document.querySelector(current ? '#currentVkBackfill' : '#archiveVkBackfill');
   button.disabled = true;
   button.textContent = 'Загружаем…';
@@ -537,7 +582,7 @@ function navigate(page) {
   document.querySelector('#pageTitle').textContent = titles[page];
   if (page === 'connections' && state.folderId) Promise.all([renderConnections(), loadCabinet()]);
   if (page === 'admin') renderAdmin();
-  if (page === 'reports' && state.folderId) loadHistoryReports();
+  if (page === 'reports' && state.folderId) { loadHistoryReports(); loadReport(); }
   closeMobileMenu();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -811,6 +856,13 @@ function bindEvents() {
   document.querySelector('#archiveYear').addEventListener('change', event => { state.archiveYear = Number(event.target.value); loadHistorySection('archive'); });
   document.querySelector('#currentVkBackfill').addEventListener('click', () => backfillVk('current'));
   document.querySelector('#archiveVkBackfill').addEventListener('click', () => backfillVk('archive'));
+  const reportYear = document.querySelector('#reportYear');
+  for (let year = new Date().getUTCFullYear(); year >= 2006; year--) reportYear.add(new Option(String(year), String(year)));
+  reportYear.value = String(new Date().getUTCFullYear());
+  reportYear.addEventListener('change', () => { loadReport(); loadHistorySection('current'); });
+  document.querySelector('#reportPlatform').addEventListener('change', loadReport);
+  document.querySelector('#reportExcel').addEventListener('click', async event => { event.currentTarget.disabled = true; try { await downloadReportExcel(); } catch (error) { showToast('Ошибка экспорта', error.message, true); } finally { event.currentTarget.disabled = false; } });
+  document.querySelector('#reportPdf').addEventListener('click', async event => { event.currentTarget.disabled = true; try { await printReport(); } catch (error) { showToast('Ошибка PDF', error.message, true); } finally { event.currentTarget.disabled = false; } });
   document.querySelector('#closeModal').addEventListener('click', () => document.querySelector('#infoModal').close());
   document.querySelector('#closeConnectionModal').addEventListener('click', () => document.querySelector('#connectionModal').close());
   document.querySelector('#infoModal').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });

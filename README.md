@@ -86,6 +86,12 @@ PUBLIC_BASE_URL=https://analytics.example.ru
 
 ## API сервиса
 
+### Отчёты и экспорт
+
+Раздел «Отчёты» использует единый серверный набор данных для экрана и Excel-экспорта. Доступ к `/api/reports/data` и `/api/reports.xlsx` проверяется по выбранной папке так же, как доступ к кабинету. XLSX содержит листы «Сводка», «Периоды», «Площадки», «Публикации» и «Методика»; пустые значения остаются пустыми, а текст публикаций выгружается как безопасный текст. Кнопка «Печать / PDF» открывает подготовленный печатный документ с кириллицей, который сохраняется штатным диалогом браузера в PDF.
+
+Аудитории VK, Telegram и MAX не складываются: это отдельные показатели площадок. Охват VK показывается отдельно. Если источник не хранит просмотры публикации по дням, отчёт помечает их как значения доступных зафиксированных публикаций и не выдаёт их за уникальный охват или ежедневную динамику.
+
 - `GET /api/auth/status` — состояние первого запуска и авторизации.
 - `POST /api/auth/register`, `/api/auth/login`, `/api/auth/logout` — регистрация и вход.
 - `GET /api/folders`, `POST /api/folders/create`, `POST /api/folders/rename` — список, создание и переименование собственных папок (`folder_id`, `name`).
@@ -93,6 +99,8 @@ PUBLIC_BASE_URL=https://analytics.example.ru
 - `GET /api/connections?folder_id=<id>`, `/api/cabinet?folder_id=<id>` — безопасные настройки без API-токенов.
 - `POST /api/connections/save`, `/api/connections/webhook`, `/api/sync` — передайте `folder_id` в JSON-теле запроса.
 - `GET /api/history/report?folder_id=<id>&year=2025&grouping=month|quarter` — годовой отчёт.
+- `GET /api/reports/data?folder_id=<id>&year=2025&platform=all|vk|telegram|max` — сводка отчёта для сайта и печатной версии.
+- `GET /api/reports.xlsx?folder_id=<id>&year=2025&platform=all|vk|telegram|max` — настоящий XLSX с листами сводки, периодов, площадок, публикаций и методики.
 - `POST /api/history/backfill` — загрузить архив VK, тело: `{"folder_id":"<id>","year":2025}`.
 - `GET /api/admin`, `POST /api/admin/update` — управление доступом (только администратор).
 - `POST /webhooks/vk/<id>`, `/webhooks/telegram/<id>`, `/webhooks/max/<id>` — защищённые точки приёма событий папки.

@@ -16,6 +16,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import io
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 import persistent_store as store
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
@@ -986,6 +989,106 @@ def history_report(folder_id, year, grouping):
             "vk_fetched_at": vk_history.get("fetched_at"), "rows": rows}
 
 
+def report_data(folder_id, year, platform_filter="all"):
+    """Build one immutable report payload used by the UI and spreadsheet export.
+
+    Audience is deliberately kept per platform: it is a point-in-time metric and
+    must not be added across networks or across months.
+    """
+    current = history_report(folder_id, year, "month")
+    platforms = [key for key in current["platforms"] if platform_filter in ("all", key)]
+    rows = [row for row in current["rows"] if row["platform"] in platforms]
+    previous = history_report(folder_id, year - 1, "month") if year > 2006 else {"rows": []}
+    previous_rows = [row for row in previous.get("rows", []) if row["platform"] in platforms]
+    runtime = read_runtime(folder_id)
+    folder = read_secure_json(FOLDERS_FILE, {}).get(folder_id, {})
+    archive = dict(runtime.get("post_archive", {}))
+    for key, saved in runtime.get("platforms", {}).items():
+        for post in saved.get("recent_posts") or []:
+            if post.get("id") and post.get("published_at"):
+                archive.setdefault("%s:%s" % (key, post["id"]), post)
+    posts = []
+    for post in archive.values():
+        if post.get("platform") not in platforms:
+            continue
+        try:
+            published = datetime.fromisoformat(str(post.get("published_at", "")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if published.year == year:
+            posts.append({"platform": post.get("platform"), "id": post.get("id"),
+                          "title": post.get("title") or post.get("text") or "Без названия",
+                          "date": published.date().isoformat(), "url": post.get("url", ""),
+                          "reach": post.get("reach"), "reactions": post.get("reactions"),
+                          "comments": post.get("comments"), "er": post.get("er")})
+    def sum_known(items, key):
+        values = [item.get(key) for item in items if item.get(key) is not None]
+        return sum(values) if values else None
+    def change(value, old):
+        if value is None or old in (None, 0):
+            return None
+        return round((value - old) / abs(old) * 100, 1)
+    audience = []
+    for platform in platforms:
+        own = [r for r in rows if r["platform"] == platform and r.get("audience") is not None]
+        old = [r for r in previous_rows if r["platform"] == platform and r.get("audience") is not None]
+        latest = own[-1].get("audience") if own else None
+        old_latest = old[-1].get("audience") if old else None
+        audience.append({"platform": platform, "value": latest, "change": (latest - old_latest) if latest is not None and old_latest is not None else None,
+                         "change_percent": change(latest, old_latest), "period": year})
+    known = lambda key: sum_known(posts, key)
+    latest_sync = runtime.get("last_sync")
+    return {"folder": {"id": folder_id, "name": folder.get("name", "Папка")}, "year": year,
+            "platform": platform_filter, "platforms": platforms, "generated_at": datetime.now(timezone.utc).isoformat(),
+            "last_sync": latest_sync, "audience": audience, "posts": {"value": len(posts) if posts else None,
+            "previous": sum(1 for r in previous_rows if r.get("posts") is not None) or None},
+            "views": {"value": known("reach"), "previous": None}, "reactions": {"value": known("reactions"), "previous": None},
+            "comments": {"value": known("comments"), "previous": None},
+            "vk_reach": {"value": sum_known([r for r in rows if r["platform"] == "vk"], "vk_reach"), "previous": None},
+            "rows": rows, "top_posts": sorted(posts, key=lambda p: (p.get("reactions") is not None, p.get("reactions") or 0), reverse=True)[:5],
+            "notes": ["Аудитория показана отдельно по каждой площадке и не суммируется.",
+                      "Просмотры и реакции относятся к зафиксированным публикациям периода; отсутствие значения не равно нулю."]}
+
+
+def _xlsx_cell(value, style=0):
+    if value is None:
+        return "<c s=\"%d\"/>" % style
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "<c s=\"%d\" t=\"n\"><v>%s</v></c>" % (style, value)
+    text = xml_escape(str(value))
+    return "<c s=\"%d\" t=\"inlineStr\"><is><t>%s</t></is></c>" % (style, text)
+
+
+def report_xlsx(payload):
+    """Small dependency-free XLSX writer; values remain typed and safe text."""
+    sheets = {
+        "Сводка": [["KORSAKOV — отчёт", payload["folder"]["name"]], ["Период", payload["year"]], [],
+                   ["Показатель", "Значение"], ["Публикации", payload["posts"]["value"]], ["Просмотры", payload["views"]["value"]],
+                   ["Реакции", payload["reactions"]["value"]], ["Комментарии", payload["comments"]["value"]], ["Охват VK", payload["vk_reach"]["value"]]],
+        "Периоды": [["Период", "Площадка", "Аудитория", "Изменение аудитории", "Публикации", "Просмотры", "Реакции", "Охват VK"]] +
+                   [[r["period"], {"vk": "ВКонтакте", "telegram": "Telegram", "max": "MAX"}.get(r["platform"], r["platform"]), r.get("audience"), r.get("audience_change"), r.get("posts"), r.get("post_views"), r.get("reactions"), r.get("vk_reach")] for r in payload["rows"]],
+        "Площадки": [["Площадка", "Аудитория на конец периода", "Изменение", "Изменение %"]] +
+                    [[{"vk": "ВКонтакте", "telegram": "Telegram", "max": "MAX"}.get(a["platform"], a["platform"]), a["value"], a["change"], a["change_percent"]] for a in payload["audience"]],
+        "Публикации": [["Площадка", "Дата", "Заголовок", "Просмотры", "Реакции", "Комментарии", "Ссылка"]] +
+                      [[{"vk": "ВКонтакте", "telegram": "Telegram", "max": "MAX"}.get(p["platform"], p["platform"]), p["date"], p["title"], p["reach"], p["reactions"], p["comments"], p["url"]] for p in payload["top_posts"]],
+        "Методика": [["Показатель", "Как рассчитан"], ["Аудитория", "Последний доступный замер каждой площадки; аудитории не суммируются."],
+                     ["Публикации", "Количество зафиксированных публикаций с датой в выбранном году."], ["Просмотры", "Сумма доступных значений публикаций; пустые значения не превращаются в нули."],
+                     ["Охват VK", "Отдельная метрика VK API, не смешивается с просмотрами."]]
+    }
+    names = list(sheets)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' + ''.join('<Override PartName="/xl/worksheets/sheet%d.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' % (i + 1) for i in range(len(names))) + '</Types>')
+        z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr("xl/workbook.xml", '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + ''.join('<sheet name="%s" sheetId="%d" r:id="rId%d"/>' % (xml_escape(n), i + 1, i + 1) for i, n in enumerate(names)) + '</sheets></workbook>')
+        z.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + ''.join('<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet%d.xml"/>' % (i + 1, i + 1) for i in range(len(names))) + '</Relationships>')
+        z.writestr("xl/styles.xml", '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><cellXfs count="2"><xf/><xf fontId="1"/></cellXfs></styleSheet>')
+        for i, name in enumerate(names):
+            rows = ''.join('<row r="%d">%s</row>' % (r + 1, ''.join(_xlsx_cell(v, 1 if r == 0 else 0) for v in values)) for r, values in enumerate(sheets[name]))
+            z.writestr("xl/worksheets/sheet%d.xml" % (i + 1), '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView tabSelected="%s"/></sheetViews><sheetData>%s</sheetData><autoFilter ref="A1:Z%d"/></worksheet>' % ("1" if i == 0 else "0", rows, len(sheets[name])))
+    return out.getvalue()
+
+
 def sync_scheduler(stop_event):
     try:
         interval = max(5, int(os.getenv("SYNC_INTERVAL_MINUTES", "30"))) * 60
@@ -1157,6 +1260,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_bytes(self, body, content_type, filename, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_text(self, text, status=200):
         body = str(text).encode("utf-8")
         self.send_response(status)
@@ -1265,6 +1377,19 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 year = validate_report_year(query.get("year", [datetime.now(timezone.utc).year])[0])
                 return self.send_json(history_report(folder_id, year, query.get("grouping", ["month"])[0]))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, 400)
+        if parsed.path in ("/api/reports/data", "/api/reports.xlsx"):
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                year = validate_report_year(query.get("year", [datetime.now(timezone.utc).year])[0])
+                platform = query.get("platform", ["all"])[0]
+                if platform not in ("all",) + PLATFORMS:
+                    raise ValueError("Неизвестная площадка")
+                payload = report_data(folder_id, year, platform)
+                if parsed.path == "/api/reports.xlsx":
+                    return self.send_bytes(report_xlsx(payload), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "korsakov-report-%d.xlsx" % year)
+                return self.send_json(payload)
             except ValueError as exc:
                 return self.send_json({"error": str(exc)}, 400)
         if parsed.path == "/api/cabinet":

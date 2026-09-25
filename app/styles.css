@@ -153,6 +153,36 @@ body.admin-page .folder-toolbar, body.admin-page .folder-footnote, body.admin-pa
 .admin-project span { min-width: 0; overflow-wrap: anywhere; }
 .page { display: none; animation: pageIn .24s ease; }
 .page.active { display: block; }
+.report-heading { align-items: center; }
+.report-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.report-toolbar { display: flex; align-items: end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; }
+.report-toolbar label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.report-toolbar select { min-width: 170px; height: 36px; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 0 10px; }
+.report-updated { margin-left: auto; color: var(--muted); font-size: 9px; }
+.report-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.report-kpi { min-height: 118px; border: 1px solid var(--line); border-radius: 13px; background: #fff; padding: 15px; box-shadow: var(--shadow); }
+.report-kpi-icon { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--violet-soft); color: var(--violet); }
+.report-kpi-icon svg { width: 15px; }
+.report-kpi small, .report-kpi em { display: block; color: var(--muted); font-size: 9px; font-style: normal; }
+.report-kpi small { margin-top: 11px; }
+.report-kpi strong { display: block; margin: 3px 0; font-size: 21px; }
+.report-columns { display: grid; grid-template-columns: 1fr 1.35fr; gap: 16px; margin-bottom: 16px; }
+.report-panel { padding: 20px; }
+.report-platforms, .report-posts { display: grid; gap: 8px; margin-top: 17px; }
+.report-platform { border-top: 1px solid var(--line); padding-top: 11px; }
+.report-platform > div { display: flex; align-items: center; gap: 8px; }
+.report-platform b { display: block; margin-top: 7px; font-size: 18px; }
+.report-platform small, .report-post small { color: var(--muted); font-size: 9px; }
+.report-post { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 9px; align-items: center; border-top: 1px solid var(--line); padding: 10px 0; }
+.report-post > b { color: var(--violet); }
+.report-post strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.report-post a { color: inherit; text-decoration: none; }
+.report-post > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.report-notes { margin-bottom: 16px; }
+.report-notes h3 { margin: 0 0 8px; font-size: 12px; }
+.report-notes ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.report-detail { padding: 20px; }
+.archive-history { margin-top: 16px; }
 @keyframes pageIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 .welcome-row, .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .welcome-row h2, .page-heading h2 { margin: 0 0 6px; font-size: 21px; letter-spacing: -.55px; }
@@ -563,6 +593,13 @@ td:first-child { text-align: left; }
   .access-row { align-items: flex-start; flex-wrap: wrap; }
   .access-row > div { flex-basis: calc(100% - 14px); }
   .access-row select { max-width: 100%; }
+  .report-heading, .report-toolbar { align-items: stretch; flex-direction: column; }
+  .report-actions, .report-toolbar select { width: 100%; }
+  .report-actions button { flex: 1; }
+  .report-updated { margin-left: 0; }
+  .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-columns { grid-template-columns: 1fr; }
+  .report-post > span { white-space: normal; text-align: right; }
 }
 
 /* Keep shared folders inside the phone viewport. These rules are placed after
