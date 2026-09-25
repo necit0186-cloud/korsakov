@@ -38,6 +38,8 @@ const state = {
   cabinet: null,
   folderId: null,
   folders: [],
+  sharedFolders: [],
+  ownedFolders: [],
   folderLimit: 1,
   archiveYear: new Date().getUTCFullYear() - 1,
 };
@@ -137,6 +139,11 @@ async function bootstrap() {
     document.querySelector('#authDialog').close();
     applyAccount(status.account);
     await loadFolders();
+    const inviteToken = new URLSearchParams(location.search).get('invite');
+    if (inviteToken) {
+      try { await api('/api/invitations/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: inviteToken }) }); history.replaceState({}, '', location.pathname); await loadFolders(); showToast('Доступ принят', 'Папка появилась в разделе «Доступные мне».'); }
+      catch (error) { showToast('Не удалось принять приглашение', error.message, true); }
+    }
     if (status.account.role === 'admin') navigate('admin');
     else navigate('overview');
   } catch (error) {
@@ -152,12 +159,14 @@ function folderQuery(path) {
 async function loadFolders(preferred) {
   const [data, status] = await Promise.all([api('/api/folders'), api('/api/auth/status')]);
   if (status.account) applyAccount(status.account);
-  state.folders = data.folders;
+  state.ownedFolders = data.folders;
+  state.sharedFolders = data.shared_folders || [];
+  state.folders = [...state.ownedFolders, ...state.sharedFolders];
   state.folderLimit = data.limit;
   state.folderId = data.folders.find(f => f.id === (preferred || state.folderId) && !f.blocked)?.id || data.folders.find(f => !f.blocked)?.id || null;
   applyAccount(state.account);
   const select = document.querySelector('#folderSelect');
-  select.innerHTML = data.folders.map(f => `<option value="${escapeHtml(f.id)}" ${f.blocked ? 'disabled' : ''}>${escapeHtml(f.name)}${f.blocked ? ' (заблокирована)' : ''}</option>`).join('');
+  select.innerHTML = state.folders.map(f => `<option value="${escapeHtml(f.id)}" ${f.blocked ? 'disabled' : ''}>${escapeHtml(f.name)}${f.role !== 'owner' ? ` · ${roleLabel(f.role)}` : ''}${f.blocked ? ' (заблокирована)' : ''}</option>`).join('');
   if (state.folderId) select.value = state.folderId;
   select.disabled = !state.folderId;
   document.querySelector('#renameFolder').disabled = !state.folderId;
@@ -177,14 +186,19 @@ async function loadFolders(preferred) {
 
 function renderFolderCards() {
   const target = document.querySelector('#folderCards');
-  target.innerHTML = state.folders.map(folder => `<article class="folder-card ${folder.id === state.folderId ? 'selected' : ''}"><span class="folder-card-icon" data-icon="layers"></span><div><strong>${escapeHtml(folder.name)}</strong><p>${folder.blocked ? 'Доступ к папке ограничен' : 'ВКонтакте · Telegram · MAX'}</p></div><div class="folder-card-actions"><button class="outline-button" data-open-folder="${escapeHtml(folder.id)}" ${folder.blocked ? 'disabled' : ''}>${folder.id === state.folderId ? 'Открыта' : 'Открыть папку'} →</button><button class="outline-button" data-rename-folder="${escapeHtml(folder.id)}" ${folder.blocked ? 'disabled' : ''}>Переименовать</button></div></article>`).join('');
+  const card = folder => `<article class="folder-card ${folder.id === state.folderId ? 'selected' : ''}"><span class="folder-card-icon" data-icon="layers"></span><div><strong>${escapeHtml(folder.name)}</strong><p>${folder.blocked ? 'Доступ к папке ограничен' : folder.role === 'owner' ? 'ВКонтакте · Telegram · MAX' : `Владелец: ${escapeHtml(folder.owner_name || folder.owner_email)} · ${roleLabel(folder.role)}`}</p></div><div class="folder-card-actions"><button class="outline-button" data-open-folder="${escapeHtml(folder.id)}" ${folder.blocked ? 'disabled' : ''}>${folder.id === state.folderId ? 'Открыта' : 'Открыть папку'} →</button>${folder.role === 'owner' ? `<button class="outline-button" data-rename-folder="${escapeHtml(folder.id)}" ${folder.blocked ? 'disabled' : ''}>Переименовать</button>` : ''}</div></article>`;
+  target.innerHTML = state.ownedFolders.map(card).join('');
+  const shared = document.querySelector('#sharedFolderCards');
+  shared.innerHTML = state.sharedFolders.map(card).join('') || '<p class="history-empty">Пока нет приглашений в папки.</p>';
+  const bind = root => {
+    root.querySelectorAll('[data-open-folder]').forEach(button => button.addEventListener('click', async () => { await loadFolders(button.dataset.openFolder); navigate('overview'); }));
+    root.querySelectorAll('[data-rename-folder]').forEach(button => button.addEventListener('click', () => renameFolder(button.dataset.renameFolder)));
+  };
   hydrateIcons(target);
-  target.querySelectorAll('[data-open-folder]').forEach(button => button.addEventListener('click', async () => {
-    await loadFolders(button.dataset.openFolder);
-    navigate('overview');
-  }));
-  target.querySelectorAll('[data-rename-folder]').forEach(button => button.addEventListener('click', () => renameFolder(button.dataset.renameFolder)));
+  hydrateIcons(shared); bind(target); bind(shared);
 }
+
+function roleLabel(role) { return ({ owner: 'Владелец', editor: 'Редактор', viewer: 'Наблюдатель' }[role] || role || 'Участник'); }
 
 async function renameFolder(folderId) {
   const folder = state.folders.find(item => item.id === folderId && !item.blocked);
@@ -243,7 +257,36 @@ async function loadCabinet() {
   const banner = document.querySelector('#realtimeBanner');
   banner.className = `realtime-banner${cabinet.realtime_available ? ' ready' : ''}`;
   banner.innerHTML = `<span class="banner-icon">${icon(cabinet.realtime_available ? 'check' : 'alert')}</span><div><strong>${cabinet.realtime_available ? 'Режим реального времени доступен' : 'Сейчас работает периодический сбор'}</strong>${cabinet.realtime_available ? `Webhook-адреса сформированы для ${escapeHtml(cabinet.public_base_url)}.` : 'Для мгновенных событий нужен публичный HTTPS-адрес. Укажите PUBLIC_BASE_URL на сервере; localhost недоступен социальным сетям.'}</div>`;
+  const folder = state.folders.find(item => item.id === state.folderId);
+  const viewer = folder?.role === 'viewer';
+  document.querySelector('#syncAll').hidden = viewer;
+  document.querySelector('#connectionSettings').hidden = viewer;
+  document.querySelectorAll('[data-connect]').forEach(button => { button.hidden = viewer; });
+  const accessCard = document.querySelector('#accessCard');
+  accessCard.hidden = folder?.role !== 'owner';
+  if (folder?.role === 'owner') await renderAccess();
   return cabinet;
+}
+
+async function renderAccess() {
+  const data = await api(folderQuery('/api/folder/access'));
+  const target = document.querySelector('#accessMembers');
+  const members = data.members.map(member => `<div class="access-row"><div><strong>${escapeHtml(member.name || member.email)}</strong><small>${escapeHtml(member.email)}</small></div><select data-member-role="${member.id}"><option value="editor" ${member.role === 'editor' ? 'selected' : ''}>Редактор</option><option value="viewer" ${member.role === 'viewer' ? 'selected' : ''}>Наблюдатель</option></select><button class="text-button danger-text" data-remove-member="${member.id}">Удалить</button></div>`).join('');
+  const invites = data.invites.map(invite => `<div class="access-row invite-row"><div><strong>${escapeHtml(invite.email)}</strong><small>Приглашение до ${new Date(invite.expires_at).toLocaleDateString('ru-RU')} · ${roleLabel(invite.role)}</small></div><button class="text-button danger-text" data-cancel-invite="${invite.id}">Отменить</button></div>`).join('');
+  target.innerHTML = members + invites || '<p class="history-empty">Участников пока нет.</p>';
+  target.querySelectorAll('[data-member-role]').forEach(select => select.addEventListener('change', async () => { await api('/api/folders/member-update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, member_id: select.dataset.memberRole, role: select.value }) }); showToast('Роль изменена', 'Новые права применены сразу.'); }));
+  target.querySelectorAll('[data-remove-member]').forEach(button => button.addEventListener('click', async () => { if (!confirm('Удалить участника из папки?')) return; await api('/api/folders/member-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, member_id: button.dataset.removeMember }) }); await renderAccess(); showToast('Доступ отозван', 'Участник больше не видит эту папку.'); }));
+  target.querySelectorAll('[data-cancel-invite]').forEach(button => button.addEventListener('click', async () => { await api('/api/folders/invite-cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, invite_id: button.dataset.cancelInvite }) }); await renderAccess(); }));
+  document.querySelector('#inviteMember').onclick = async () => {
+    const email = prompt('Почта сотрудника'); if (!email) return;
+    const role = prompt('Роль: editor — редактор, viewer — наблюдатель', 'viewer'); if (!role) return;
+    try {
+      const result = await api('/api/folders/invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, email, role }) });
+      try { await navigator.clipboard.writeText(result.invite.url); } catch (_) {}
+      prompt('Ссылка-приглашение скопирована. Передайте её сотруднику:', result.invite.url);
+      await renderAccess();
+    } catch (error) { showToast('Не удалось создать приглашение', error.message, true); }
+  };
 }
 
 async function loadDashboard() {

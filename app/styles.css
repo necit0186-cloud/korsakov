@@ -560,7 +560,8 @@ body:not(.authenticated) .app-shell { display: none; }
 .landing-header { position: sticky; top: 0; z-index: 55; border-bottom: 1px solid #e0e4eb; background: rgba(255,255,255,.96); backdrop-filter: blur(16px); }
 .landing-header-inner { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 32px; }
 .landing-brand { display: inline-flex; align-items: center; gap: 9px; color: #15171c; text-decoration: none; font-size: 19px; font-weight: 800; letter-spacing: .11em; }
-.brand-symbol { display: block; flex: none; width: 55px; height: 25px; object-fit: cover; border-radius: 3px; }
+.brand-symbol { display: block; flex: none; width: 55px; height: 25px; object-fit: contain; }
+.sidebar .brand-symbol, .identity-emblem img { filter: brightness(0) invert(1); }
 .brand-name { font-size: 17px; letter-spacing: .08em; }
 .landing-mark { display: flex; width: 22px; height: 25px; align-items: end; gap: 3px; }
 .landing-mark i { width: 4px; border-radius: 3px; background: #315bff; }
@@ -633,6 +634,10 @@ body:not(.authenticated) .app-shell { display: none; }
 .folder-card-actions { display: flex; grid-column: 1 / -1; gap: 8px; margin-top: 5px; }
 .folder-card-actions .outline-button { min-width: 0; flex: 1; justify-content: center; }
 .folder-card .outline-button:disabled { cursor: default; opacity: .6; }
+.shared-folders-heading { margin-top: 28px; }
+.access-card { margin-top: 24px; padding: 24px; }
+.access-row { display: flex; align-items: center; gap: 14px; border-top: 1px solid var(--line); padding: 14px 0; }
+.access-row > div { min-width: 0; flex: 1; }.access-row strong, .access-row small { display: block; }.access-row strong { font-size: 12px; }.access-row small { margin-top: 4px; color: var(--muted); font-size: 10px; }.access-row select { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 7px 9px; font-size: 11px; }.danger-text { color: var(--danger); }
 .sync-button, .primary-button { min-height: 44px; border-radius: 12px; font-size: 12px; box-shadow: 0 7px 16px rgba(49,91,255,.14); }.sync-button:hover, .primary-button:hover { background: #2249e5; }.outline-button { min-height: 40px; border-radius: 11px; font-size: 11px; }
 .kpi-card { min-height: 158px; border-radius: 20px; padding: 20px; }.kpi-card:after { right: -48px; bottom: -55px; width: 84px; height: 84px; }.kpi-value { font-size: clamp(23px, 2.3vw, 32px); }.kpi-label { font-size: 11px; }.kpi-caption { font-size: 10px; }.kpi-bottom { display: grid; align-items: start; gap: 3px; }
 .card-head h3, .connection-section-head h3 { font-size: 15px; }.card-head p, .section-head p, .connection-section-head p { font-size: 11px; }.welcome-row h2, .page-heading h2 { font-size: 24px; }.welcome-row p, .page-heading p { font-size: 12px; }.section-head h2 { font-size: 18px; }

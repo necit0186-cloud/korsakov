@@ -37,6 +37,8 @@ SYNC_LOCK = store.StoreLock("sync")
 SESSIONS = {}
 
 PLATFORMS = ("vk", "telegram", "max")
+FOLDER_ROLES = ("owner", "editor", "viewer")
+INVITE_TTL = 7 * 86400
 
 
 def load_dotenv():
@@ -158,15 +160,64 @@ def folder_limit(user):
     return (3 if user.get("premium") else 1) + user.get("extra_folders", 0)
 
 
-def owned_folder(user, folder_id, platform=None):
+def folder_role(folder, user_id):
+    if folder.get("owner_id") == user_id:
+        return "owner"
+    return folder.get("members", {}).get(user_id, {}).get("role")
+
+
+def normalize_folder(folder):
+    """Keep pre-team folders compatible with the team access model."""
+    members = folder.get("members")
+    if not isinstance(members, dict):
+        folder["members"] = {}
+    return folder
+
+
+def folder_access(user, folder_id, platform=None, write=False):
     folder = read_secure_json(FOLDERS_FILE, {}).get(folder_id)
-    if not folder or folder["owner_id"] != user["id"]:
+    if not folder or not folder_role(folder, user["id"]):
         raise PermissionError("Папка не найдена")
     if folder.get("blocked"):
         raise PermissionError("Папка заблокирована администратором")
     if platform and platform in folder.get("blocked_projects", []):
         raise PermissionError("Проект заблокирован администратором")
-    return folder
+    role = folder_role(folder, user["id"])
+    if write and role == "viewer":
+        raise PermissionError("Наблюдатель может только просматривать папку")
+    return folder, role
+
+
+def owned_folder(user, folder_id, platform=None):
+    return folder_access(user, folder_id, platform, write=True)[0]
+
+
+def folder_public(folder, users, user_id):
+    folder = normalize_folder(dict(folder))
+    owner = users.get(folder.get("owner_id"), {})
+    role = folder_role(folder, user_id)
+    return {"id": folder["id"], "owner_id": folder["owner_id"], "name": folder["name"],
+            "blocked": bool(folder.get("blocked")), "role": role,
+            "owner_name": owner.get("name", ""), "owner_email": owner.get("email", ""),
+            "member_count": len(folder.get("members", {})) + 1}
+
+
+def invite_public(invite, users=None):
+    return {"id": invite["id"], "email": invite["email"], "role": invite["role"],
+            "created_at": invite["created_at"], "expires_at": invite["expires_at"],
+            "status": invite.get("status", "pending"), "accepted_at": invite.get("accepted_at")}
+
+
+def invite_key(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def invite_file():
+    return DATA_DIR / "invites.json"
+
+
+def active_invite(invite):
+    return invite.get("status", "pending") == "pending" and datetime.fromisoformat(invite["expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
 
 
 def load_connections(folder_id):
@@ -1144,7 +1195,7 @@ class Handler(SimpleHTTPRequestHandler):
     def selected_folder(self, user, query, platform=None):
         folder_id = urllib.parse.parse_qs(query).get("folder_id", [""])[0]
         try:
-            owned_folder(user, folder_id, platform)
+            folder_access(user, folder_id, platform)
             return folder_id
         except PermissionError as exc:
             self.send_json({"ok": False, "error": str(exc)}, 403)
@@ -1184,7 +1235,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/folders":
             folders = read_secure_json(FOLDERS_FILE, {})
-            return self.send_json({"folders": [folder for folder in folders.values() if folder["owner_id"] == user["id"]], "limit": folder_limit(user)})
+            users = read_secure_json(USERS_FILE, {})
+            mine = [folder_public(folder, users, user["id"]) for folder in folders.values() if folder.get("owner_id") == user["id"]]
+            shared = [folder_public(folder, users, user["id"]) for folder in folders.values() if folder_role(folder, user["id"]) and folder.get("owner_id") != user["id"]]
+            return self.send_json({"folders": mine, "shared_folders": shared, "limit": folder_limit(user)})
         if parsed.path == "/api/admin":
             if user.get("role") != "admin":
                 return self.send_json({"error": "Доступ запрещён"}, 403)
@@ -1221,6 +1275,19 @@ class Handler(SimpleHTTPRequestHandler):
                 "public_base_url": base_url,
                 "realtime_available": base_url.startswith("https://"),
             })
+        if parsed.path == "/api/folder/access":
+            folders = read_secure_json(FOLDERS_FILE, {})
+            folder = folders.get(folder_id)
+            users = read_secure_json(USERS_FILE, {})
+            if not folder or folder.get("owner_id") != user["id"]:
+                return self.send_json({"error": "Только владелец может управлять доступом"}, 403)
+            invites = [invite_public(item) for item in read_secure_json(DATA_DIR / "invites.json", {}).values()
+                       if item.get("folder_id") == folder_id and item.get("status", "pending") == "pending"]
+            members = [{"id": member_id, "name": users.get(member_id, {}).get("name", ""),
+                        "email": users.get(member_id, {}).get("email", ""), "role": item.get("role"),
+                        "joined_at": item.get("joined_at")} for member_id, item in normalize_folder(folder).get("members", {}).items()
+                       if member_id in users]
+            return self.send_json({"folder": folder_public(folder, users, user["id"]), "members": members, "invites": invites})
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -1299,6 +1366,88 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             payload = self.read_json()
+            if parsed.path == "/api/invitations/accept":
+                token = str(payload.get("token", ""))
+                if len(token) < 20:
+                    raise ValueError("Некорректная ссылка-приглашение")
+                with LOCK:
+                    invites = store.read_json(invite_file()) if store.exists(invite_file()) else {}
+                    invite = invites.get(invite_key(token))
+                    if not invite or not active_invite(invite):
+                        raise ValueError("Приглашение отменено или срок его действия истёк")
+                    if invite["email"] != user["email"]:
+                        raise PermissionError("Войдите с почтой, на которую отправлено приглашение")
+                    folders = store.read_json(FOLDERS_FILE)
+                    folder = folders.get(invite["folder_id"])
+                    if not folder or folder.get("blocked"):
+                        raise PermissionError("Папка недоступна")
+                    normalize_folder(folder)["members"][user["id"]] = {"role": invite["role"], "joined_at": datetime.now(timezone.utc).isoformat()}
+                    invite["status"] = "accepted"
+                    invite["accepted_at"] = datetime.now(timezone.utc).isoformat()
+                    write_json_unlocked(FOLDERS_FILE, folders)
+                    write_json_unlocked(invite_file(), invites)
+                return self.send_json({"ok": True, "folder": folder_public(folder, read_secure_json(USERS_FILE, {}), user["id"])})
+            if parsed.path == "/api/folders/invite":
+                folder_id = str(payload.get("folder_id", ""))
+                folder, role = folder_access(user, folder_id)
+                if role != "owner":
+                    raise PermissionError("Только владелец может приглашать участников")
+                email = str(payload.get("email", "")).strip().lower()
+                member_role = str(payload.get("role", "viewer"))
+                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    raise ValueError("Укажите корректную почту")
+                if member_role not in ("editor", "viewer"):
+                    raise ValueError("Выберите роль редактора или наблюдателя")
+                if email == user["email"]:
+                    raise ValueError("Владелец уже имеет доступ к папке")
+                with LOCK:
+                    invites = store.read_json(invite_file()) if store.exists(invite_file()) else {}
+                    users = store.read_json(USERS_FILE)
+                    if any(item.get("email") == email and active_invite(item) and item.get("folder_id") == folder_id for item in invites.values()):
+                        raise ValueError("Для этой почты уже есть действующее приглашение")
+                    invited_user = next((item for item in users.values() if item.get("email") == email), None)
+                    if invited_user and folder_role(folder, invited_user["id"]):
+                        raise ValueError("Пользователь уже участвует в этой папке")
+                    raw_token = secrets.token_urlsafe(32)
+                    now = datetime.now(timezone.utc)
+                    invite = {"id": secrets.token_hex(12), "folder_id": folder_id, "email": email, "role": member_role,
+                              "created_at": now.isoformat(), "expires_at": (now + timedelta(seconds=INVITE_TTL)).isoformat(), "status": "pending"}
+                    invites[invite_key(raw_token)] = invite
+                    write_json_unlocked(invite_file(), invites)
+                base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+                return self.send_json({"ok": True, "invite": {**invite_public(invite), "token": raw_token,
+                    "url": "%s/?invite=%s" % (base_url, raw_token) if base_url else "?invite=%s" % raw_token}})
+            if parsed.path == "/api/folders/invite-cancel":
+                folder_id = str(payload.get("folder_id", "")); invite_id = str(payload.get("invite_id", ""))
+                folder, role = folder_access(user, folder_id)
+                if role != "owner":
+                    raise PermissionError("Только владелец может отменять приглашения")
+                with LOCK:
+                    invites = store.read_json(invite_file()) if store.exists(invite_file()) else {}
+                    invite = next((item for item in invites.values() if item.get("id") == invite_id and item.get("folder_id") == folder_id), None)
+                    if not invite: raise ValueError("Приглашение не найдено")
+                    invite["status"] = "cancelled"; write_json_unlocked(invite_file(), invites)
+                return self.send_json({"ok": True})
+            if parsed.path == "/api/folders/member-update":
+                folder_id = str(payload.get("folder_id", "")); member_id = str(payload.get("member_id", ""))
+                folder, role = folder_access(user, folder_id)
+                if role != "owner": raise PermissionError("Только владелец может менять роли")
+                new_role = str(payload.get("role", ""))
+                if new_role not in ("editor", "viewer"): raise ValueError("Выберите роль редактора или наблюдателя")
+                with LOCK:
+                    folders = store.read_json(FOLDERS_FILE); folder = folders.get(folder_id); normalize_folder(folder)
+                    if member_id not in folder["members"]: raise ValueError("Участник не найден")
+                    folder["members"][member_id]["role"] = new_role; write_json_unlocked(FOLDERS_FILE, folders)
+                return self.send_json({"ok": True})
+            if parsed.path == "/api/folders/member-remove":
+                folder_id = str(payload.get("folder_id", "")); member_id = str(payload.get("member_id", ""))
+                folder, role = folder_access(user, folder_id)
+                if role != "owner": raise PermissionError("Только владелец может удалять участников")
+                with LOCK:
+                    folders = store.read_json(FOLDERS_FILE); folder = folders.get(folder_id); normalize_folder(folder)
+                    if member_id not in folder["members"]: raise ValueError("Участник не найден")
+                    del folder["members"][member_id]; write_json_unlocked(FOLDERS_FILE, folders)
+                return self.send_json({"ok": True})
             if parsed.path == "/api/folders/create":
                 name = str(payload.get("name", "")).strip()
                 if not 1 <= len(name) <= 100:

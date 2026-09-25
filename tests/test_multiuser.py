@@ -169,6 +169,27 @@ class MultiuserTest(unittest.TestCase):
         self.assertEqual(runtime['daily_snapshots'][today]['vk']['subscribers'], 250)
         self.assertIn('post_archive', runtime)
 
+    def test_folder_invitation_roles_and_revocation(self):
+        _, _, owner_cookie = self.request('/api/auth/login', {'email': 'necit0186@gmail.com', 'password': 'old-password'})
+        folder_id = self.request('/api/folders', cookie=owner_cookie)[1]['folders'][0]['id']
+        _, _, member_cookie = self.request('/api/auth/register', {'name': 'Editor', 'email': 'editor@example.com', 'password': 'strong-password'})
+        status, result, _ = self.request('/api/folders/invite', {'folder_id': folder_id, 'email': 'editor@example.com', 'role': 'editor'}, owner_cookie)
+        self.assertEqual(status, 200)
+        token = result['invite']['token']
+        self.assertEqual(self.request('/api/folders', cookie=member_cookie)[1]['shared_folders'], [])
+        status, accepted, _ = self.request('/api/invitations/accept', {'token': token}, member_cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(accepted['folder']['role'], 'editor')
+        shared = self.request('/api/folders', cookie=member_cookie)[1]['shared_folders']
+        self.assertEqual(shared[0]['id'], folder_id)
+        self.assertEqual(self.request('/api/dashboard?folder_id=' + folder_id, cookie=member_cookie)[0], 200)
+        self.assertEqual(self.request('/api/folders/rename', {'folder_id': folder_id, 'name': 'Nope'}, member_cookie)[0], 403)
+        self.assertEqual(self.request('/api/folders/member-remove', {'folder_id': folder_id, 'member_id': shared[0]['owner_id']}, owner_cookie)[0], 400)
+        folder = server.read_secure_json(server.FOLDERS_FILE, {})[folder_id]
+        member_id = next(iter(folder['members']))
+        self.assertEqual(self.request('/api/folders/member-remove', {'folder_id': folder_id, 'member_id': member_id}, owner_cookie)[0], 200)
+        self.assertEqual(self.request('/api/dashboard?folder_id=' + folder_id, cookie=member_cookie)[0], 403)
+
 
 if __name__ == '__main__':
     unittest.main()
