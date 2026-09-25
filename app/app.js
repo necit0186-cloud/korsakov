@@ -272,18 +272,16 @@ async function renderAccess() {
   const data = await api(folderQuery('/api/folder/access'));
   const target = document.querySelector('#accessMembers');
   const members = data.members.map(member => `<div class="access-row"><div><strong>${escapeHtml(member.name || member.email)}</strong><small>${escapeHtml(member.email)}</small></div><select data-member-role="${member.id}"><option value="editor" ${member.role === 'editor' ? 'selected' : ''}>Редактор</option><option value="viewer" ${member.role === 'viewer' ? 'selected' : ''}>Наблюдатель</option></select><button class="text-button danger-text" data-remove-member="${member.id}">Удалить</button></div>`).join('');
-  const invites = data.invites.map(invite => `<div class="access-row invite-row"><div><strong>${escapeHtml(invite.email)}</strong><small>Приглашение до ${new Date(invite.expires_at).toLocaleDateString('ru-RU')} · ${roleLabel(invite.role)}</small></div><button class="text-button danger-text" data-cancel-invite="${invite.id}">Отменить</button></div>`).join('');
+  const invites = data.invites.map(invite => `<div class="access-row invite-row"><div><strong>Одноразовая ссылка</strong><small>Действует до ${new Date(invite.expires_at).toLocaleDateString('ru-RU')} · Редактор</small></div><button class="text-button danger-text" data-cancel-invite="${invite.id}">Отменить</button></div>`).join('');
   target.innerHTML = members + invites || '<p class="history-empty">Участников пока нет.</p>';
   target.querySelectorAll('[data-member-role]').forEach(select => select.addEventListener('change', async () => { await api('/api/folders/member-update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, member_id: select.dataset.memberRole, role: select.value }) }); showToast('Роль изменена', 'Новые права применены сразу.'); }));
   target.querySelectorAll('[data-remove-member]').forEach(button => button.addEventListener('click', async () => { if (!confirm('Удалить участника из папки?')) return; await api('/api/folders/member-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, member_id: button.dataset.removeMember }) }); await renderAccess(); showToast('Доступ отозван', 'Участник больше не видит эту папку.'); }));
   target.querySelectorAll('[data-cancel-invite]').forEach(button => button.addEventListener('click', async () => { await api('/api/folders/invite-cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, invite_id: button.dataset.cancelInvite }) }); await renderAccess(); }));
   document.querySelector('#inviteMember').onclick = async () => {
-    const email = prompt('Почта сотрудника'); if (!email) return;
-    const role = prompt('Роль: editor — редактор, viewer — наблюдатель', 'viewer'); if (!role) return;
     try {
-      const result = await api('/api/folders/invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId, email, role }) });
+      const result = await api('/api/folders/invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_id: state.folderId }) });
       try { await navigator.clipboard.writeText(result.invite.url); } catch (_) {}
-      prompt('Ссылка-приглашение скопирована. Передайте её сотруднику:', result.invite.url);
+      prompt('Одноразовая ссылка скопирована. Передайте её сотруднику. После принятия она станет недействительной:', result.invite.url);
       await renderAccess();
     } catch (error) { showToast('Не удалось создать приглашение', error.message, true); }
   };

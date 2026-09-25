@@ -203,7 +203,7 @@ def folder_public(folder, users, user_id):
 
 
 def invite_public(invite, users=None):
-    return {"id": invite["id"], "email": invite["email"], "role": invite["role"],
+    return {"id": invite["id"], "email": invite.get("email", ""), "role": invite["role"],
             "created_at": invite["created_at"], "expires_at": invite["expires_at"],
             "status": invite.get("status", "pending"), "accepted_at": invite.get("accepted_at")}
 
@@ -1375,12 +1375,12 @@ class Handler(SimpleHTTPRequestHandler):
                     invite = invites.get(invite_key(token))
                     if not invite or not active_invite(invite):
                         raise ValueError("Приглашение отменено или срок его действия истёк")
-                    if invite["email"] != user["email"]:
-                        raise PermissionError("Войдите с почтой, на которую отправлено приглашение")
                     folders = store.read_json(FOLDERS_FILE)
                     folder = folders.get(invite["folder_id"])
                     if not folder or folder.get("blocked"):
                         raise PermissionError("Папка недоступна")
+                    if folder_role(folder, user["id"]):
+                        raise ValueError("У вас уже есть доступ к этой папке")
                     normalize_folder(folder)["members"][user["id"]] = {"role": invite["role"], "joined_at": datetime.now(timezone.utc).isoformat()}
                     invite["status"] = "accepted"
                     invite["accepted_at"] = datetime.now(timezone.utc).isoformat()
@@ -1392,25 +1392,11 @@ class Handler(SimpleHTTPRequestHandler):
                 folder, role = folder_access(user, folder_id)
                 if role != "owner":
                     raise PermissionError("Только владелец может приглашать участников")
-                email = str(payload.get("email", "")).strip().lower()
-                member_role = str(payload.get("role", "viewer"))
-                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-                    raise ValueError("Укажите корректную почту")
-                if member_role not in ("editor", "viewer"):
-                    raise ValueError("Выберите роль редактора или наблюдателя")
-                if email == user["email"]:
-                    raise ValueError("Владелец уже имеет доступ к папке")
                 with LOCK:
                     invites = store.read_json(invite_file()) if store.exists(invite_file()) else {}
-                    users = store.read_json(USERS_FILE)
-                    if any(item.get("email") == email and active_invite(item) and item.get("folder_id") == folder_id for item in invites.values()):
-                        raise ValueError("Для этой почты уже есть действующее приглашение")
-                    invited_user = next((item for item in users.values() if item.get("email") == email), None)
-                    if invited_user and folder_role(folder, invited_user["id"]):
-                        raise ValueError("Пользователь уже участвует в этой папке")
                     raw_token = secrets.token_urlsafe(32)
                     now = datetime.now(timezone.utc)
-                    invite = {"id": secrets.token_hex(12), "folder_id": folder_id, "email": email, "role": member_role,
+                    invite = {"id": secrets.token_hex(12), "folder_id": folder_id, "role": "editor",
                               "created_at": now.isoformat(), "expires_at": (now + timedelta(seconds=INVITE_TTL)).isoformat(), "status": "pending"}
                     invites[invite_key(raw_token)] = invite
                     write_json_unlocked(invite_file(), invites)

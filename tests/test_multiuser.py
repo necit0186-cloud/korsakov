@@ -180,6 +180,7 @@ class MultiuserTest(unittest.TestCase):
         status, accepted, _ = self.request('/api/invitations/accept', {'token': token}, member_cookie)
         self.assertEqual(status, 200)
         self.assertEqual(accepted['folder']['role'], 'editor')
+        self.assertEqual(self.request('/api/invitations/accept', {'token': token}, member_cookie)[0], 400)
         shared = self.request('/api/folders', cookie=member_cookie)[1]['shared_folders']
         self.assertEqual(shared[0]['id'], folder_id)
         self.assertEqual(self.request('/api/dashboard?folder_id=' + folder_id, cookie=member_cookie)[0], 200)
