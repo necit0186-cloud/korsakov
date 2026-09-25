@@ -548,6 +548,41 @@ td:first-child { text-align: left; }
   .connection-form-actions { flex-direction: column; }
 }
 
+/* Shared folders use the same compact layout on phones as owned folders. */
+@media (max-width: 760px) {
+  .app-shell, .main, .page, .content { width: 100%; min-width: 0; max-width: 100%; }
+  .app-shell { overflow-x: hidden; }
+  .folder-toolbar { display: flex; width: 100%; align-items: stretch; flex-direction: column; gap: 10px; }
+  .folder-toolbar > div, .folder-toolbar select, .folder-toolbar button { width: 100%; max-width: none; margin-left: 0 !important; }
+  .folder-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .folder-card { min-width: 0; }
+  .folder-card-actions { min-width: 0; flex-wrap: wrap; }
+  .connection-section-head { min-width: 0; flex-wrap: wrap; }
+  .connection-section-head > div { min-width: 0; }
+  .access-card { min-width: 0; overflow: hidden; }
+  .access-row { align-items: flex-start; flex-wrap: wrap; }
+  .access-row > div { flex-basis: calc(100% - 14px); }
+  .access-row select { max-width: 100%; }
+}
+
+/* Keep shared folders inside the phone viewport. These rules are placed after
+   the workspace skin so the mobile layout wins over desktop defaults. */
+@media (max-width: 760px) {
+  .app-shell, .main, .page, .content { width: 100%; min-width: 0; max-width: 100%; }
+  .app-shell { overflow-x: hidden; }
+  .folder-toolbar { display: flex; width: 100%; align-items: stretch; flex-direction: column; gap: 10px; }
+  .folder-toolbar > div, .folder-toolbar select, .folder-toolbar button { width: 100%; max-width: none; margin-left: 0 !important; }
+  .folder-card-grid { grid-template-columns: minmax(0, 1fr); }
+  .folder-card { min-width: 0; }
+  .folder-card-actions { min-width: 0; flex-wrap: wrap; }
+  .connection-section-head { min-width: 0; flex-wrap: wrap; }
+  .connection-section-head > div { min-width: 0; }
+  .access-card { min-width: 0; overflow: hidden; }
+  .access-row { align-items: flex-start; flex-wrap: wrap; }
+  .access-row > div { flex-basis: calc(100% - 14px); }
+  .access-row select { max-width: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
