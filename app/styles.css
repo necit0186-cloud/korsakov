@@ -167,6 +167,11 @@ body.admin-page .folder-toolbar, body.admin-page .folder-footnote, body.admin-pa
 .report-kpi small { margin-top: 11px; }
 .report-kpi strong { display: block; margin: 3px 0; font-size: 21px; }
 .report-columns { display: grid; grid-template-columns: 1fr 1.35fr; gap: 16px; margin-bottom: 16px; }
+.report-chart { margin-bottom: 16px; }
+.report-bars { display: flex; align-items: end; gap: 5px; height: 145px; margin-top: 18px; border-bottom: 1px solid var(--line); padding: 0 8px; }
+.report-bar-item { display: flex; min-width: 10px; height: 100%; flex: 1; flex-direction: column; align-items: center; justify-content: end; gap: 5px; }
+.report-bar-item i { display: block; width: 100%; max-width: 24px; min-height: 4px; border-radius: 5px 5px 0 0; background: var(--violet); }
+.report-bar-item small { color: var(--muted); font-size: 8px; }
 .report-panel { padding: 20px; }
 .report-platforms, .report-posts { display: grid; gap: 8px; margin-top: 17px; }
 .report-platform { border-top: 1px solid var(--line); padding-top: 11px; }
